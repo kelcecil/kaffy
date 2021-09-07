@@ -33,8 +33,6 @@ defmodule Kaffy.ResourceForm do
     end
   end
 
-  def form_field(changeset, form, field, opts \\ [])
-
   def form_field(changeset, form, {field, options}, opts) do
     options = options || %{}
 
@@ -85,7 +83,45 @@ defmodule Kaffy.ResourceForm do
     schema = schema.__struct__
 
     case type do
-      {:embed, _} ->
+      {:embed, %{cardinality: :many, related: related_struct}} ->
+        embed_fields = Kaffy.ResourceSchema.fields(related_struct)
+        Enum.map(Map.get(data, field), fn datum ->
+          embed_changeset = Ecto.Changeset.change(datum || related_struct.__struct__)
+          IO.inspect(embed_changeset, label: "embed_changeset")
+
+          inputs_for(form, field, fn fp ->
+            [
+              {:safe, ~s(<div class="card ml-3" style="padding:15px;">)},
+              Enum.reduce(embed_fields, [], fn f, all ->
+                IO.inspect(f, label: "f")
+                IO.inspect(fp, label: "fp")
+
+                # Set the new type to the recursive structure to correctly
+                # render the form field.
+                field_type =
+                  case f do
+                    {ft, _} -> ft
+                    ft when is_atom(ft) or is_binary(ft) -> ft
+                  end
+                options = %{options | type: field_type}
+
+                content_tag :div, class: "form-group" do
+                  [
+                    [
+                      form_label(fp, f),
+                      form_field(embed_changeset, fp, {field_type, options}, class: "form-control")
+                    ]
+                    | all
+                  ]
+                end
+              end),
+              {:safe, "</div>"}
+            ]
+          end)
+
+        end)
+
+      {:embed, %{cardinality: :one}} ->
         embed = Kaffy.ResourceSchema.embed_struct(schema, field)
         embed_fields = Kaffy.ResourceSchema.fields(embed)
         embed_changeset = Ecto.Changeset.change(Map.get(data, field) || embed.__struct__)
@@ -94,11 +130,21 @@ defmodule Kaffy.ResourceForm do
           [
             {:safe, ~s(<div class="card ml-3" style="padding:15px;">)},
             Enum.reduce(embed_fields, [], fn f, all ->
+
+              # Set the new type to the recursive structure to correctly
+              # render the form field.
+              field_type =
+                case f do
+                  {ft, _} -> ft
+                  ft when is_atom(ft) or is_binary(ft) -> ft
+                end
+              options = %{options | type: field_type}
+
               content_tag :div, class: "form-group" do
                 [
                   [
                     form_label(fp, f),
-                    form_field(embed_changeset, fp, {f, options}, class: "form-control")
+                    form_field(embed_changeset, fp, {field_type, options}, class: "form-control")
                   ]
                   | all
                 ]
