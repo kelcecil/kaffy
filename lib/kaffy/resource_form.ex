@@ -84,12 +84,14 @@ defmodule Kaffy.ResourceForm do
     else
       case type do
         {:embed, %{cardinality: :many, related: related_struct}} ->
+          struct_name = related_struct |> Atom.to_string() |> String.split(".") |> List.last()
           embed_fields = Kaffy.ResourceSchema.fields(related_struct)
 
           inputs_for(form, field, fn fp ->
             embed_changeset = Ecto.Changeset.change(fp.data)
             [
               {:safe, ~s(<div class="card ml-3" style="padding:15px;">)},
+              {:safe, ~s(<p>#{struct_name} #{fp.index}</p>)},
               Enum.reduce(embed_fields, [], fn f, all ->
 
                 # Set the new type to the recursive structure to correctly
