@@ -71,37 +71,33 @@ defmodule Kaffy.ResourceForm do
     end
   end
 
-  def form_field(changeset, form, {field, options}, opts) do
-    type = Kaffy.ResourceSchema.field_type(changeset.data.__struct__, field)
-    build_html_input(changeset.data, form, {field, options}, type, opts)
-  end
-
-  defp build_html_input(schema, form, {field, options}, type, opts, readonly \\ false) do
-    data = schema
+  defp build_html_input(data, form, {field, options}, type, opts, readonly \\ false) do
     {conn, opts} = Keyword.pop(opts, :conn)
     opts = Keyword.put(opts, :readonly, readonly)
-    schema = schema.__struct__
+    schema = data.__struct__
 
-    case type do
-      {:embed, %{cardinality: :many, related: related_struct}} ->
-        embed_fields = Kaffy.ResourceSchema.fields(related_struct)
-        Enum.map(Map.get(data, field), fn datum ->
-          embed_changeset = Ecto.Changeset.change(datum || related_struct.__struct__)
-          IO.inspect(embed_changeset, label: "embed_changeset")
+    # If the atom represents a module that implements render_form, then defer to that implementation.
+    # Otherwise, evaluate from a set of understood types.
+    if is_atom(type) && Kaffy.Utils.is_module(type) && function_exported?(type, :render_form, 5) do
+      changeset = Ecto.Changeset.change(data)
+      type.render_form(conn, changeset, form, field, options)
+    else
+      case type do
+        {:embed, %{cardinality: :many, related: related_struct}} ->
+          embed_fields = Kaffy.ResourceSchema.fields(related_struct)
 
           inputs_for(form, field, fn fp ->
+            embed_changeset = Ecto.Changeset.change(fp.data)
             [
               {:safe, ~s(<div class="card ml-3" style="padding:15px;">)},
               Enum.reduce(embed_fields, [], fn f, all ->
-                IO.inspect(f, label: "f")
-                IO.inspect(fp, label: "fp")
 
                 # Set the new type to the recursive structure to correctly
                 # render the form field.
-                field_type =
+                {field_name, field_type} =
                   case f do
-                    {ft, _} -> ft
-                    ft when is_atom(ft) or is_binary(ft) -> ft
+                    {field_name, %{type: ft}} -> {field_name, ft}
+                    ft when is_atom(ft) or is_binary(ft) -> {ft, ft}
                   end
                 options = %{options | type: field_type}
 
@@ -109,7 +105,7 @@ defmodule Kaffy.ResourceForm do
                   [
                     [
                       form_label(fp, f),
-                      form_field(embed_changeset, fp, {field_type, options}, class: "form-control")
+                      form_field(embed_changeset, fp, {field_name, options}, class: "form-control")
                     ]
                     | all
                   ]
@@ -119,139 +115,138 @@ defmodule Kaffy.ResourceForm do
             ]
           end)
 
-        end)
+        {:embed, %{cardinality: :one}} ->
+          embed = Kaffy.ResourceSchema.embed_struct(schema, field)
+          embed_fields = Kaffy.ResourceSchema.fields(embed)
+          embed_changeset = Ecto.Changeset.change(Map.get(data, field) || embed.__struct__)
 
-      {:embed, %{cardinality: :one}} ->
-        embed = Kaffy.ResourceSchema.embed_struct(schema, field)
-        embed_fields = Kaffy.ResourceSchema.fields(embed)
-        embed_changeset = Ecto.Changeset.change(Map.get(data, field) || embed.__struct__)
+          inputs_for(form, field, fn fp ->
+            [
+              {:safe, ~s(<div class="card ml-3" style="padding:15px;">)},
+              Enum.reduce(embed_fields, [], fn f, all ->
 
-        inputs_for(form, field, fn fp ->
-          [
-            {:safe, ~s(<div class="card ml-3" style="padding:15px;">)},
-            Enum.reduce(embed_fields, [], fn f, all ->
+                # Set the new type to the recursive structure to correctly
+                # render the form field.
+                {field_name, field_type} =
+                  case f do
+                    {field_name, %{type: ft}} -> {field_name, ft}
+                    ft when is_atom(ft) or is_binary(ft) -> {ft, ft}
+                  end
+                options = %{options | type: field_type}
 
-              # Set the new type to the recursive structure to correctly
-              # render the form field.
-              field_type =
-                case f do
-                  {ft, _} -> ft
-                  ft when is_atom(ft) or is_binary(ft) -> ft
-                end
-              options = %{options | type: field_type}
-
-              content_tag :div, class: "form-group" do
-                [
+                content_tag :div, class: "form-group" do
                   [
-                    form_label(fp, f),
-                    form_field(embed_changeset, fp, {field_type, options}, class: "form-control")
+                    [
+                      form_label(fp, f),
+                      form_field(embed_changeset, fp, {field_name, options}, class: "form-control")
+                    ]
+                    | all
                   ]
-                  | all
-                ]
-              end
-            end),
-            {:safe, "</div>"}
-          ]
-        end)
+                end
+              end),
+              {:safe, "</div>"}
+            ]
+          end)
 
-      :id ->
-        case Kaffy.ResourceSchema.primary_key(schema) == [field] do
-          true -> text_input(form, field, opts)
-          false -> text_or_assoc(conn, schema, form, field, opts)
-        end
-
-      :binary_id ->
-        case Kaffy.ResourceSchema.primary_key(schema) == [field] do
-          true -> text_input(form, field, opts)
-          false -> text_or_assoc(conn, schema, form, field, opts)
-        end
-
-      :string ->
-        text_input(form, field, opts)
-
-      :richtext ->
-        opts = Keyword.put(opts, :class, "kaffy-editor")
-        textarea(form, field, opts)
-
-      :textarea ->
-        textarea(form, field, opts)
-
-      :integer ->
-        number_input(form, field, opts)
-
-      :float ->
-        text_input(form, field, opts)
-
-      :decimal ->
-        text_input(form, field, opts)
-
-      t when t in [:boolean, :boolean_checkbox] ->
-        checkbox_opts = Keyword.put(opts, :class, "custom-control-input")
-        label_opts = Keyword.put(opts, :class, "custom-control-label")
-
-        [
-          {:safe, ~s(<div class="custom-control custom-checkbox">)},
-          checkbox(form, field, checkbox_opts),
-          label(form, field, form_label_string({field, options}), label_opts),
-          {:safe, "</div>"}
-        ]
-
-      :boolean_switch ->
-        checkbox_opts = Keyword.put(opts, :class, "custom-control-input")
-        label_opts = Keyword.put(opts, :class, "custom-control-label")
-
-        [
-          {:safe, ~s(<div class="custom-control custom-switch">)},
-          checkbox(form, field, checkbox_opts),
-          label(form, field, form_label_string({field, options}), label_opts),
-          {:safe, "</div>"}
-        ]
-
-      :map ->
-        value = Map.get(data, field, "")
-
-        value =
-          cond do
-            is_map(value) -> Kaffy.Utils.json().encode!(value, escape: :html_safe, pretty: true)
-            true -> value
+        :id ->
+          case Kaffy.ResourceSchema.primary_key(schema) == [field] do
+            true -> text_input(form, field, opts)
+            false -> text_or_assoc(conn, schema, form, field, opts)
           end
 
-        textarea(form, field, [value: value, rows: 4, placeholder: "JSON Content"] ++ opts)
+        :binary_id ->
+          case Kaffy.ResourceSchema.primary_key(schema) == [field] do
+            true -> text_input(form, field, opts)
+            false -> text_or_assoc(conn, schema, form, field, opts)
+          end
 
-      {:array, _} ->
-        value =
-          data
-          |> Map.get(field, "")
-          |> Kaffy.Utils.json().encode!(escape: :html_safe, pretty: true)
+        :string ->
+          text_input(form, field, opts)
 
-        textarea(form, field, [value: value, rows: 4, placeholder: "JSON Content"] ++ opts)
+        :richtext ->
+          opts = Keyword.put(opts, :class, "kaffy-editor")
+          textarea(form, field, opts)
 
-      :file ->
-        file_input(form, field, opts)
+        :textarea ->
+          textarea(form, field, opts)
 
-      :select ->
-        select(form, field, opts)
+        :integer ->
+          number_input(form, field, opts)
 
-      :date ->
-        flatpickr_date(form, field, opts)
+        :float ->
+          text_input(form, field, opts)
 
-      :time ->
-        flatpickr_time(form, field, opts)
+        :decimal ->
+          text_input(form, field, opts)
 
-      :naive_datetime ->
-        flatpickr_datetime(form, field, opts)
+        t when t in [:boolean, :boolean_checkbox] ->
+          checkbox_opts = Keyword.put(opts, :class, "custom-control-input")
+          label_opts = Keyword.put(opts, :class, "custom-control-label")
 
-      :naive_datetime_usec ->
-        flatpickr_datetime_usec(form, field, opts)
+          [
+            {:safe, ~s(<div class="custom-control custom-checkbox">)},
+            checkbox(form, field, checkbox_opts),
+            label(form, field, form_label_string({field, options}), label_opts),
+            {:safe, "</div>"}
+          ]
 
-      :utc_datetime ->
-        flatpickr_datetime(form, field, opts)
+        :boolean_switch ->
+          checkbox_opts = Keyword.put(opts, :class, "custom-control-input")
+          label_opts = Keyword.put(opts, :class, "custom-control-label")
 
-      :utc_datetime_usec ->
-        flatpickr_datetime_usec(form, field, opts)
+          [
+            {:safe, ~s(<div class="custom-control custom-switch">)},
+            checkbox(form, field, checkbox_opts),
+            label(form, field, form_label_string({field, options}), label_opts),
+            {:safe, "</div>"}
+          ]
 
-      _ ->
-        text_input(form, field, opts)
+        :map ->
+          value = Map.get(data, field, "")
+
+          value =
+            cond do
+              is_map(value) -> Kaffy.Utils.json().encode!(value, escape: :html_safe, pretty: true)
+              true -> value
+            end
+
+          textarea(form, field, [value: value, rows: 4, placeholder: "JSON Content"] ++ opts)
+
+        {:array, _} ->
+          value =
+            data
+            |> Map.get(field, "")
+            |> Kaffy.Utils.json().encode!(escape: :html_safe, pretty: true)
+
+          textarea(form, field, [value: value, rows: 4, placeholder: "JSON Content"] ++ opts)
+
+        :file ->
+          file_input(form, field, opts)
+
+        :select ->
+          select(form, field, opts)
+
+        :date ->
+          flatpickr_date(form, field, opts)
+
+        :time ->
+          flatpickr_time(form, field, opts)
+
+        :naive_datetime ->
+          flatpickr_datetime(form, field, opts)
+
+        :naive_datetime_usec ->
+          flatpickr_datetime_usec(form, field, opts)
+
+        :utc_datetime ->
+          flatpickr_datetime(form, field, opts)
+
+        :utc_datetime_usec ->
+          flatpickr_datetime_usec(form, field, opts)
+
+        _ ->
+          text_input(form, field, opts)
+      end
     end
   end
 
